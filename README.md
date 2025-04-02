@@ -158,28 +158,41 @@ Hass-MCP provides several tools for interacting with Home Assistant:
 - `list_automations`: Get a list of all automations
 - `call_service_tool`: Call any Home Assistant service
 - `restart_ha`: Restart Home Assistant
+- `reload_ha`: Reload specific Home Assistant components without a full restart
 - `get_history`: Get the state history of an entity
 - `get_error_log`: Get the Home Assistant error log
+
+### REST API Tools
+
+- `api_root`: Get information about the API (API root endpoint)
+- `get_config`: Get Home Assistant configuration information
+- `get_events`: Get available events in Home Assistant
+- `get_services`: Get available services in Home Assistant
+- `get_history_period`: Get history for entities during a specific period
+- `get_logbook`: Get logbook entries
+- `get_states`: Get all entity states
+- `set_state`: Set the state of an entity
+- `fire_event`: Fire an event
+- `render_template`: Render a template
+- `check_config`: Check Home Assistant configuration
+- `handle_intent`: Handle an intent request
 
 ### Configuration Tools
 
 - `configure_component`: Universal function for creating or updating any Home Assistant component (automations, scripts, scenes)
 - `delete_component`: Delete any Home Assistant component
 - `set_attributes`: Flexible entity control with automatic service detection
-- `manage_dashboard`: Comprehensive function for dashboard management (create, update, delete, retrieve)
 
 ## Prompts for Guided Conversations
 
 Hass-MCP includes several prompts for guided conversations:
 
 - `create_automation_prompt`: Guide for creating Home Assistant automations
-- `create_dashboard_prompt`: Guide for creating customized dashboards
 - `debug_automation`: Troubleshooting help for automations that aren't working
 - `troubleshoot_entity`: Diagnose issues with entities
 - `routine_optimizer`: Analyze usage patterns and suggest optimized routines based on actual behavior
 - `automation_health_check`: Review all automations, find conflicts, redundancies, or improvement opportunities
 - `entity_naming_consistency`: Audit entity names and suggest standardization improvements
-- `dashboard_layout_generator`: Create optimized dashboards based on user preferences and usage patterns
 
 ## Configuration Examples
 
@@ -210,35 +223,6 @@ configure_component(
 set_attributes(
     entity_id="light.living_room",
     attributes={"brightness": 255, "rgb_color": [255, 0, 0], "transition": 2}
-)
-
-# Create a dashboard (including HACS cards)
-manage_dashboard(
-    action="create",
-    title="My Home",
-    icon="mdi:home",
-    views=[
-        {
-            "title": "Living Room",
-            "path": "living-room",
-            "cards": [
-                {
-                    "type": "entities",
-                    "title": "Lights",
-                    "entities": ["light.living_room", "light.floor_lamp"]
-                },
-                {
-                    "type": "custom:mini-graph-card",
-                    "name": "Temperature",
-                    "entities": ["sensor.living_room_temperature"],
-                    "hours_to_show": 24
-                }
-            ]
-        }
-    ],
-    resources=[
-        {"type": "module", "url": "/hacsfiles/mini-graph-card/mini-graph-card.js"}
-    ]
 )
 ```
 

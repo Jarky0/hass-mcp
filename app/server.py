@@ -4,6 +4,8 @@ import logging
 import json
 import httpx # Sicherstellen, dass httpx importiert ist, falls benötigt
 from typing import List, Dict, Any, Optional, Callable, Awaitable, TypeVar, cast
+import aiohttp
+import os
 
 # Logging einrichten
 logging.basicConfig(
@@ -26,8 +28,7 @@ from app.hass import (
 # Import der neuen Funktionen aus simplified_extensions
 from app.simplified_extensions import (
     configure_ha_component, delete_ha_component,
-    set_entity_attributes, manage_dashboard,
-    list_all_dashboards # NEUEN Import hinzufügen
+    set_entity_attributes
 )
 
 
@@ -632,118 +633,6 @@ async def set_attributes_tool(
     # Ruft die importierte Funktion aus simplified_extensions auf
     return await set_entity_attributes(entity_id, attributes)
 
-# --- NEUES TOOL ---
-@mcp.tool()
-@async_handler("list_dashboards_tool")
-async def list_dashboards_tool() -> List[Dict[str, Any]]:
-    """
-    Listet alle verfügbaren Lovelace-Dashboards in Home Assistant auf.
-
-    Gibt eine Liste von Dictionaries zurück, jedes enthält Informationen
-    über ein Dashboard (z.B. id, url_path, title, icon, mode).
-    Der 'mode' kann 'storage' (UI-verwaltet) oder 'yaml' sein.
-
-    Returns:
-        Eine Liste von Dashboard-Informations-Dictionaries oder eine Liste
-        mit einem Fehler-Dictionary bei Problemen.
-        Beispiel Rückgabe:
-        [
-          {"id": "lovelace-generated", "url_path": null, "title": "Übersicht", "icon": "mdi:view-dashboard", "show_in_sidebar": true, "require_admin": false, "mode": "storage"},
-          {"id": "mein-yaml-dashboard", "url_path": "mein-yaml-dashboard", "title": "YAML Dashboard", "icon": "mdi:file-document", "show_in_sidebar": true, "require_admin": false, "mode": "yaml"}
-        ]
-    """
-    logger.info("Tool list_dashboards_tool aufgerufen")
-    # Ruft die neu importierte Funktion aus simplified_extensions auf
-    return await list_all_dashboards()
-# --- ENDE NEUES TOOL ---
-
-
-@mcp.tool()
-@async_handler("manage_dashboard")
-async def manage_dashboard_tool(
-    action: str,
-    dashboard_id: Optional[str] = None,
-    config: Optional[Dict[str, Any]] = None,
-    title: Optional[str] = None,
-    icon: Optional[str] = None,
-    show_in_sidebar: bool = True,
-    views: Optional[List[Dict[str, Any]]] = None,
-    resources: Optional[List[Dict[str, Any]]] = None
-) -> Dict[str, Any]:
-    """
-    Dashboards in Home Assistant verwalten (erstellen, aktualisieren, löschen, abrufen).
-
-    Nutzt die Home Assistant Lovelace API. Funktioniert am besten mit Dashboards im 'storage' Modus.
-    Operationen auf YAML-Dashboards können fehlschlagen oder unerwartetes Verhalten zeigen.
-
-    Args:
-        action: Aktion (create, update, delete, get)
-        dashboard_id: ID (url_path) des Dashboards (optional für get/create, erforderlich für update/delete).
-                      Für das Standard-Dashboard bei 'get' weglassen oder `None` übergeben.
-        config: Komplette Konfiguration als Dictionary (für update).
-        title: Titel des Dashboards (für create).
-        icon: Icon des Dashboards (für create).
-        show_in_sidebar: Ob das Dashboard in der Seitenleiste angezeigt werden soll (für create).
-        views: Dashboard-Ansichten (Liste von Dictionaries) (für create/update).
-        resources: Benutzerdefinierte Ressourcen/HACS-Module (Liste von Dictionaries) (für create/update).
-
-    Returns:
-        Antwort von Home Assistant oder ein Fehler-Dictionary.
-
-    Beispiele:
-        Dashboard erstellen:
-        ```json
-        {
-            "action": "create",
-            "title": "Mein Test Dashboard",
-            "icon": "mdi:test-tube",
-            "views": [
-                {
-                    "title": "Test View", "path": "test",
-                    "cards": [{"type": "entities", "entities": ["light.living_room"]}]
-                }
-            ],
-            "resources": [{"type": "module", "url": "/hacsfiles/button-card/button-card.js"}]
-        }
-        ```
-        Dashboard abrufen (Standard):
-        ```json
-        {"action": "get"}
-        ```
-        Dashboard abrufen (Spezifisch):
-        ```json
-        {"action": "get", "dashboard_id": "mein_test_dashboard"}
-        ```
-        Dashboard löschen:
-        ```json
-        {"action": "delete", "dashboard_id": "mein_test_dashboard"}
-        ```
-        Dashboard aktualisieren (mit config):
-         ```json
-        {
-            "action": "update",
-            "dashboard_id": "mein_test_dashboard",
-            "config": { "title": "Neuer Titel", "views": [...] }
-        }
-        ```
-         Dashboard aktualisieren (mit Parametern):
-         ```json
-        {
-            "action": "update",
-            "dashboard_id": "mein_test_dashboard",
-            "title": "Anderer Titel",
-            "views": [...]
-        }
-        ```
-    """
-    logger.info(f"Tool manage_dashboard aufgerufen: Aktion={action}, ID={dashboard_id or 'default'}")
-    # Ruft die importierte Funktion aus simplified_extensions auf
-    return await manage_dashboard(
-        action, dashboard_id, config, title, icon,
-        show_in_sidebar, views, resources
-    )
-
-
 # --- Resource Endpoints ---
 # (Unverändert)
 # ... (Code der bestehenden Ressourcen hier einfügen) ...
@@ -1036,7 +925,7 @@ async def get_all_entities_resource() -> str:
             friendly_name = entity.get("attributes", {}).get("friendly_name", "")
             # Korrigiert: Verwende den korrekten Pfad für Ressourcen
             result += f"- **[{entity['entity_id']}](resource:hass://entities/{entity['entity_id']})**: {entity.get('state', 'unknown')}"
-            if friendly_name and friendly_name != entity["entity_id"]:
+            if friendly_name != entity["entity_id"]:
                 result += f" ({friendly_name})"
             result += "\n"
         result += "\n"
@@ -1438,6 +1327,333 @@ You'll help the user create optimized dashboards by:
         {"role": "user", "content": user_message}
     ]
 
+# --- REST API Tools ---
+
+# Konfigurationskonstanten
+HA_URL = os.getenv("HA_URL", "http://localhost:8123")
+headers = {
+    "Authorization": f"Bearer {os.getenv('HA_TOKEN', '')}",
+    "Content-Type": "application/json"
+}
+
+async def get_client() -> aiohttp.ClientSession:
+    """
+    Erstellt oder gibt eine bestehende aiohttp Client-Session zurück
+    """
+    if not hasattr(get_client, "_session"):
+        get_client._session = aiohttp.ClientSession()
+    return get_client._session
+
+def get_ha_headers() -> Dict[str, str]:
+    """
+    Gibt die Standard-Header für Home Assistant API-Anfragen zurück
+    """
+    return headers.copy()
+
+async def api_call(method: str, endpoint: str, data: Optional[Dict] = None) -> Any:
+    """
+    Generische Funktion für API-Aufrufe
+    
+    Args:
+        method: HTTP-Methode ('GET', 'POST', etc.)
+        endpoint: API-Endpunkt
+        data: Optional zu sendende Daten
+        
+    Returns:
+        API-Antwort als JSON
+    """
+    client = await get_client()
+    headers = get_ha_headers()
+    url = f"{HA_URL}{endpoint}"
+    
+    try:
+        if method.upper() == "GET":
+            async with client.get(url, headers=headers) as response:
+                response.raise_for_status()
+                return await response.json()
+        elif method.upper() == "POST":
+            async with client.post(url, headers=headers, json=data) as response:
+                response.raise_for_status()
+                return await response.json()
+        else:
+            raise ValueError(f"Unsupported HTTP method: {method}")
+    except aiohttp.ClientError as e:
+        logger.error(f"API call error: {str(e)}", exc_info=True)
+        return {"error": f"API call failed: {str(e)}"}
+
+@mcp.tool()
+@async_handler("api_root")
+async def api_root() -> Dict[str, Any]:
+    """
+    Get information about the API (API root endpoint)
+    
+    Returns:
+        General information about the Home Assistant API
+    """
+    logger.info("Getting API root information")
+    return await api_call("GET", "/api/")
+
+@mcp.tool()
+@async_handler("get_config")
+async def get_config() -> Dict[str, Any]:
+    """
+    Get Home Assistant configuration information
+    
+    Returns:
+        Configuration information about the Home Assistant instance
+    """
+    logger.info("Getting Home Assistant configuration")
+    return await api_call("GET", "/api/config")
+
+@mcp.tool()
+@async_handler("get_events")
+async def get_events() -> List[Dict[str, Any]]:
+    """
+    Get available events in Home Assistant
+    
+    Returns:
+        A list of events that can be triggered/subscribed to
+    """
+    logger.info("Getting Home Assistant events")
+    return await api_call("GET", "/api/events")
+
+@mcp.tool()
+@async_handler("get_services")
+async def get_services() -> Dict[str, Any]:
+    """
+    Get available services in Home Assistant
+    
+    Returns:
+        A dictionary of available services grouped by domain
+    """
+    logger.info("Getting Home Assistant services")
+    return await api_call("GET", "/api/services")
+
+@mcp.tool()
+@async_handler("get_history_period")
+async def get_history_period(timestamp: Optional[str] = None, filter_entity_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    """
+    Get history for all or a specific entity during a specific period
+    
+    Args:
+        timestamp: Start time for history query (ISO format). If not provided, defaults to 1 day ago
+        filter_entity_id: Optional entity ID to filter history results
+        
+    Returns:
+        A list of historical state changes
+    """
+    logger.info(f"Getting history period from {timestamp} for entity {filter_entity_id}")
+    
+    endpoint = "/api/history/period"
+    if timestamp:
+        endpoint += f"/{timestamp}"
+    
+    params = {}
+    if filter_entity_id:
+        params["filter_entity_id"] = filter_entity_id
+    
+    return await api_call("GET", endpoint)
+
+@mcp.tool()
+@async_handler("get_logbook")
+async def get_logbook(timestamp: Optional[str] = None, entity_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    """
+    Get logbook entries
+    
+    Args:
+        timestamp: Start time for logbook entries (ISO format). If not provided, defaults to 1 day ago
+        entity_id: Optional entity ID to filter logbook entries
+        
+    Returns:
+        A list of logbook entries
+    """
+    logger.info(f"Getting logbook entries from {timestamp} for entity {entity_id}")
+    
+    endpoint = "/api/logbook"
+    if timestamp:
+        endpoint += f"/{timestamp}"
+    
+    params = {}
+    if entity_id:
+        params["entity"] = entity_id
+    
+    return await api_call("GET", endpoint)
+
+@mcp.tool()
+@async_handler("get_states")
+async def get_states() -> List[Dict[str, Any]]:
+    """
+    Get all entity states
+    
+    Returns:
+        A list of all entity states
+    """
+    logger.info("Getting all entity states")
+    return await api_call("GET", "/api/states")
+
+@mcp.tool()
+@async_handler("set_state")
+async def set_state(entity_id: str, state: str, attributes: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """
+    Set the state of an entity
+    
+    Args:
+        entity_id: The entity ID to set
+        state: The state to set
+        attributes: Optional attributes to set
+        
+    Returns:
+        The new state object
+    """
+    logger.info(f"Setting state for {entity_id} to {state}")
+    
+    data = {
+        "state": state
+    }
+    if attributes:
+        data["attributes"] = attributes
+    
+    return await api_call("POST", f"/api/states/{entity_id}", data)
+
+@mcp.tool()
+@async_handler("fire_event")
+async def fire_event(event_type: str, event_data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """
+    Fire an event
+    
+    Args:
+        event_type: The event type to fire
+        event_data: Optional event data
+        
+    Returns:
+        Event result
+    """
+    logger.info(f"Firing event {event_type} with data {event_data}")
+    return await api_call("POST", f"/api/events/{event_type}", event_data or {})
+
+@mcp.tool()
+@async_handler("render_template")
+async def render_template(template: str, variables: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """
+    Render a template
+    
+    Args:
+        template: The template string to render
+        variables: Optional variables for template rendering
+        
+    Returns:
+        The rendered template
+    """
+    logger.info(f"Rendering template: {template}")
+    
+    data = {
+        "template": template
+    }
+    if variables:
+        data["variables"] = variables
+    
+    return await api_call("POST", "/api/template", data)
+
+@mcp.tool()
+@async_handler("check_config")
+async def check_config() -> Dict[str, Any]:
+    """
+    Check Home Assistant configuration
+    
+    Returns:
+        Configuration check result
+    """
+    logger.info("Checking Home Assistant configuration")
+    return await api_call("POST", "/api/config/core/check_config")
+
+@mcp.tool()
+@async_handler("handle_intent")
+async def handle_intent(text: str, slot_data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """
+    Handle an intent request
+    
+    Args:
+        text: The text to process for intent handling
+        slot_data: Optional slot data for the intent
+        
+    Returns:
+        The intent response
+    """
+    logger.info(f"Handling intent: {text}")
+    
+    data = {
+        "text": text
+    }
+    if slot_data:
+        data["slot_data"] = slot_data
+    
+    return await api_call("POST", "/api/intent/handle", data)
+
+@mcp.tool()
+@async_handler("reload_ha")
+async def reload_ha(component: Optional[str] = None, reload_all: bool = False) -> Dict[str, Any]:
+    """
+    Reload Home Assistant components without a full restart
+    
+    Args:
+        component: Specific component to reload (lovelace, core_config, automation, scene, script, group, etc.)
+        reload_all: If True, reloads multiple common components
+    
+    Returns:
+        Dictionary with results of reload operation(s)
+    """
+    logger.info(f"Reloading Home Assistant component: {component}")
+    results = {}
+    
+    reload_services = {
+        "core_config": {"domain": "homeassistant", "service": "reload_core_config"},
+        "lovelace": {"domain": "lovelace", "service": "reload"},
+        "lovelace_resources": {"domain": "lovelace", "service": "reload_resources"},
+        "automation": {"domain": "automation", "service": "reload"},
+        "scene": {"domain": "scene", "service": "reload"},
+        "script": {"domain": "script", "service": "reload"},
+        "group": {"domain": "group", "service": "reload"},
+        "input_boolean": {"domain": "input_boolean", "service": "reload"},
+        "input_datetime": {"domain": "input_datetime", "service": "reload"},
+        "input_number": {"domain": "input_number", "service": "reload"},
+        "input_select": {"domain": "input_select", "service": "reload"},
+        "input_text": {"domain": "input_text", "service": "reload"},
+        "persons": {"domain": "person", "service": "reload"},
+        "zones": {"domain": "zone", "service": "reload"},
+        "themes": {"domain": "frontend", "service": "reload_themes"},
+        "template": {"domain": "template", "service": "reload"},
+        "media_player": {"domain": "media_player", "service": "reload"},
+        "frontend": {"domain": "frontend", "service": "reload"}
+    }
+    
+    if reload_all:
+        components_to_reload = ["core_config", "lovelace", "lovelace_resources", 
+                              "automation", "script", "scene", "frontend"]
+    elif component:
+        components_to_reload = [component]
+    else:
+        components_to_reload = ["lovelace", "lovelace_resources"]
+    
+    for comp in components_to_reload:
+        if comp in reload_services:
+            service_data = reload_services[comp]
+            try:
+                await api_call(
+                    "POST", 
+                    f"/api/services/{service_data['domain']}/{service_data['service']}"
+                )
+                results[comp] = "Reloaded successfully"
+            except Exception as e:
+                error_msg = f"Error reloading {comp}: {str(e)}"
+                logger.error(error_msg, exc_info=True)
+                results[comp] = error_msg
+        else:
+            results[comp] = f"Unknown component: {comp}"
+    
+    return {
+        "result": "Reload operations completed",
+        "details": results
+    }
 
 # --- Main Execution Logic ---
 # HINWEIS: Die Verwendung von asyncio.run() hier ist korrekt für das direkte
@@ -1461,7 +1677,7 @@ async def main():
         if hasattr(mcp, 'run'):
              mcp.run() # Geht davon aus, dass run() stdio handhabt und blockiert
         else:
-             await stdio_server(mcp) # Direkter Aufruf, falls mcp.run nicht existiert
+             await stdio_server(mcp) # Direkter Aufruf, falls mcp.run nicht existiert.
     finally:
         logger.info("Closing HTTP client...")
         await cleanup_client() # Ensure client is closed on exit
