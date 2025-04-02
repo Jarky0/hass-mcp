@@ -43,10 +43,21 @@ Hass-MCP enables AI assistants like Claude to interact directly with your Home A
 
 ### Docker Installation (Recommended)
 
-1. Pull the Docker image:
+1. Build the Docker image:
 
    ```bash
-   docker pull voska/hass-mcp:latest
+   # Clone the repository
+   git clone https://github.com/Jarky0/hass-mcp.git
+   cd hass-mcp
+
+   # Build the Docker image
+   docker build -t hass-mcp:latest .
+   
+   # Optional: Tag with your own namespace
+   # docker tag hass-mcp:latest your-username/hass-mcp:latest
+   
+   # Optional: Push to your Docker registry
+   # docker push your-username/hass-mcp:latest
    ```
 
 2. Add the MCP server to Claude Desktop:
@@ -68,7 +79,7 @@ Hass-MCP enables AI assistants like Claude to interact directly with your Home A
            "HA_URL",
            "-e",
            "HA_TOKEN",
-           "voska/hass-mcp"
+           "hass-mcp"
          ],
          "env": {
            "HA_URL": "http://homeassistant.local:8123",
@@ -101,7 +112,7 @@ Hass-MCP enables AI assistants like Claude to interact directly with your Home A
    - Type: `command`
    - Command:
      ```
-     docker run -i --rm -e HA_URL=http://homeassistant.local:8123 -e HA_TOKEN=YOUR_LONG_LIVED_TOKEN voska/hass-mcp
+     docker run -i --rm -e HA_URL=http://homeassistant.local:8123 -e HA_TOKEN=YOUR_LONG_LIVED_TOKEN hass-mcp
      ```
    - Replace `YOUR_LONG_LIVED_TOKEN` with your actual Home Assistant token
    - Update the HA_URL to match your Home Assistant instance address
@@ -114,7 +125,7 @@ To use with Claude Code CLI, you can add the MCP server directly using the `mcp 
 **Using Docker (recommended):**
 
 ```bash
-claude mcp add hass-mcp -e HA_URL=http://homeassistant.local:8123 -e HA_TOKEN=YOUR_LONG_LIVED_TOKEN -- docker run -i --rm -e HA_URL -e HA_TOKEN voska/hass-mcp
+claude mcp add hass-mcp -e HA_URL=http://homeassistant.local:8123 -e HA_TOKEN=YOUR_LONG_LIVED_TOKEN -- docker run -i --rm -e HA_URL -e HA_TOKEN hass-mcp
 ```
 
 Replace `YOUR_LONG_LIVED_TOKEN` with your actual Home Assistant token and update the HA_URL to match your Home Assistant instance address.
