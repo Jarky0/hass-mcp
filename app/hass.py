@@ -3,15 +3,20 @@ from typing import Dict, Any, Optional, List, TypeVar, Callable, Awaitable, Unio
 import functools
 import inspect
 import logging
+import json
+import os
 
 from app.config import HA_URL, HA_TOKEN, get_ha_headers
 
-# Set up logging
+# Type variable for generic functions
+F = TypeVar('F', bound=Callable[..., Any])
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Define a generic type for our API function return values
 T = TypeVar('T')
-F = TypeVar('F', bound=Callable[..., Awaitable[Any]])
 
 # HTTP client
 _client: Optional[httpx.AsyncClient] = None
@@ -25,19 +30,110 @@ DEFAULT_STANDARD_FIELDS = ["entity_id", "state", "attributes", "last_updated"]
 
 # Domain-specific important attributes to include in lean responses
 DOMAIN_IMPORTANT_ATTRIBUTES = {
-    "light": ["brightness", "color_temp", "rgb_color", "supported_color_modes"],
-    "switch": ["device_class"],
-    "binary_sensor": ["device_class"],
-    "sensor": ["device_class", "unit_of_measurement", "state_class"],
-    "climate": ["hvac_mode", "current_temperature", "temperature", "hvac_action"],
-    "media_player": ["media_title", "media_artist", "source", "volume_level"],
+    "light": ["brightness", "color_temp", "color_mode", "rgb_color"],
+    "switch": ["device_class", "icon"],
+    "binary_sensor": ["device_class", "is_on"],
+    "sensor": ["unit_of_measurement", "device_class", "state_class"],
+    "climate": ["temperature", "current_temperature", "hvac_mode", "hvac_action"],
     "cover": ["current_position", "current_tilt_position"],
-    "fan": ["percentage", "preset_mode"],
+    "media_player": ["media_title", "media_artist", "volume_level", "source"],
     "camera": ["entity_picture"],
-    "automation": ["last_triggered"],
-    "scene": [],
-    "script": ["last_triggered"],
 }
+
+# Einfaches Cache-System
+class SimpleCache:
+    """Einfaches In-Memory-Cache-System für API-Anfragen"""
+    
+    def __init__(self, ttl_seconds: int = 30):
+        self.cache = {}
+        self.ttl_seconds = ttl_seconds
+        
+    def get(self, key: str) -> Optional[Any]:
+        """Versuche, einen Wert aus dem Cache zu holen"""
+        import time
+        
+        if key not in self.cache:
+            return None
+            
+        timestamp, value = self.cache[key]
+        current_time = time.time()
+        
+        # Prüfe, ob der Cache-Eintrag abgelaufen ist
+        if current_time - timestamp > self.ttl_seconds:
+            # Eintrag ist abgelaufen, entferne ihn
+            del self.cache[key]
+            return None
+            
+        return value
+        
+    def set(self, key: str, value: Any) -> None:
+        """Speichere einen Wert im Cache"""
+        import time
+        
+        self.cache[key] = (time.time(), value)
+        
+    def invalidate(self, key_prefix: str = None) -> None:
+        """Invalidiere Cache-Einträge basierend auf einem Präfix"""
+        if key_prefix is None:
+            # Lösche den gesamten Cache
+            self.cache.clear()
+        else:
+            # Lösche alle Einträge, die mit dem Präfix beginnen
+            keys_to_delete = [k for k in self.cache.keys() if k.startswith(key_prefix)]
+            for key in keys_to_delete:
+                del self.cache[key]
+
+# Initialisiere die Cache-Instanz
+# Lange TTL für Konfigurationsdaten, kurze TTL für Zustandsdaten
+entity_cache = SimpleCache(ttl_seconds=5)  # Kurze TTL für Entitätszustände
+config_cache = SimpleCache(ttl_seconds=60) # Längere TTL für Konfigurationen
+
+# Hilfsfunktion zum Erstellen eines Cache-Schlüssels
+def make_cache_key(base_key: str, *args, **kwargs) -> str:
+    """Erstelle einen eindeutigen Cache-Schlüssel basierend auf Funktion und Argumenten"""
+    # Konvertiere args und kwargs in einen stabilen String
+    args_str = '_'.join(str(a) for a in args)
+    kwargs_str = '_'.join(f"{k}={v}" for k, v in sorted(kwargs.items()))
+    
+    # Kombiniere alles zu einem eindeutigen Schlüssel
+    return f"{base_key}_{args_str}_{kwargs_str}"
+
+# Dekorator für cachable Funktionen
+def cacheable(cache_instance, key_prefix: str, use_cache: bool = True):
+    """Dekorator zum Cachen von Funktionsaufrufen"""
+    def decorator(func):
+        @functools.wraps(func)
+        async def wrapper(*args, **kwargs):
+            # Extrahiere den cache-Parameter, wenn vorhanden, sonst Standard
+            should_use_cache = kwargs.pop('use_cache', use_cache)
+            
+            if not should_use_cache:
+                # Cache überspringen, wenn explizit deaktiviert
+                return await func(*args, **kwargs)
+            
+            # Erstelle einen Cache-Schlüssel
+            cache_key = make_cache_key(key_prefix, *args, **kwargs)
+            
+            # Versuche, aus dem Cache zu holen
+            cached_result = cache_instance.get(cache_key)
+            if cached_result is not None:
+                logger.debug(f"Cache hit for {func.__name__} - {cache_key}")
+                return cached_result
+            
+            # Cache-Miss, rufe die Funktion auf
+            logger.debug(f"Cache miss for {func.__name__} - {cache_key}")
+            result = await func(*args, **kwargs)
+            
+            # Speichere das Ergebnis im Cache, außer bei Fehlern
+            if isinstance(result, dict) and result.get('error'):
+                # Fehler nicht cachen
+                logger.debug(f"Not caching error result for {func.__name__}")
+            else:
+                cache_instance.set(cache_key, result)
+            
+            return result
+        return wrapper
+    return decorator
 
 def handle_api_errors(func: F) -> F:
     """
@@ -159,6 +255,7 @@ def filter_fields(data: Dict[str, Any], fields: List[str]) -> Dict[str, Any]:
 
 # API Functions
 @handle_api_errors
+@cacheable(config_cache, "get_hass_version")
 async def get_hass_version() -> str:
     """Get the Home Assistant version from the API"""
     client = await get_client()
@@ -168,10 +265,12 @@ async def get_hass_version() -> str:
     return data.get("version", "unknown")
 
 @handle_api_errors
+@cacheable(entity_cache, "get_entity_state")
 async def get_entity_state(
     entity_id: str,
     fields: Optional[List[str]] = None,
-    lean: bool = False
+    lean: bool = False,
+    use_cache: bool = True
 ) -> Dict[str, Any]:
     """
     Get the state of a Home Assistant entity
@@ -181,6 +280,7 @@ async def get_entity_state(
         fields: Optional list of specific fields to include in the response
         lean: If True, returns a token-efficient version with minimal fields
               (overridden by fields parameter if provided)
+        use_cache: Whether to use cached data if available
     
     Returns:
         Entity state dictionary, optionally filtered to include only specified fields
@@ -214,12 +314,14 @@ async def get_entity_state(
         return entity_data
 
 @handle_api_errors
+@cacheable(entity_cache, "get_entities")
 async def get_entities(
     domain: Optional[str] = None, 
     search_query: Optional[str] = None, 
     limit: int = 100,
     fields: Optional[List[str]] = None,
-    lean: bool = True
+    lean: bool = True,
+    use_cache: bool = True
 ) -> List[Dict[str, Any]]:
     """
     Get a list of all entities from Home Assistant with optional filtering and search
@@ -230,6 +332,7 @@ async def get_entities(
         limit: Maximum number of entities to return (default: 100)
         fields: Optional list of specific fields to include in each entity
         lean: If True (default), returns token-efficient versions with minimal fields
+        use_cache: Whether to use cached data if available
     
     Returns:
         List of entity dictionaries, optionally filtered by domain and search terms,
@@ -282,30 +385,37 @@ async def get_entities(
         entities = entities[:limit]
     
     # Apply field filtering if requested
-    if fields:
-        # Use explicit field list when provided
-        return [filter_fields(entity, fields) for entity in entities]
-    elif lean:
-        # Apply domain-specific lean fields to each entity
-        result = []
+    if fields or lean:
+        # Prepare the fields to include
+        if fields:
+            # User-specified fields
+            include_fields = fields
+        else:
+            # Default lean fields
+            include_fields = DEFAULT_LEAN_FIELDS.copy()
+            
+        # Filter each entity
+        filtered_entities = []
         for entity in entities:
-            # Get the entity's domain
-            entity_domain = entity["entity_id"].split('.')[0]
-            
-            # Start with basic lean fields
-            lean_fields = DEFAULT_LEAN_FIELDS.copy()
-            
-            # Add domain-specific important attributes
-            if entity_domain in DOMAIN_IMPORTANT_ATTRIBUTES:
-                for attr in DOMAIN_IMPORTANT_ATTRIBUTES[entity_domain]:
-                    lean_fields.append(f"attr.{attr}")
-            
-            # Filter and add to result
-            result.append(filter_fields(entity, lean_fields))
+            # For domain-specific attributes in lean mode
+            if lean and not fields:
+                domain = entity["entity_id"].split('.')[0]
+                if domain in DOMAIN_IMPORTANT_ATTRIBUTES:
+                    # Add domain-specific fields for this entity
+                    entity_fields = include_fields.copy()
+                    for attr in DOMAIN_IMPORTANT_ATTRIBUTES[domain]:
+                        entity_fields.append(f"attr.{attr}")
+                    filtered_entities.append(filter_fields(entity, entity_fields))
+                else:
+                    # Use default lean fields
+                    filtered_entities.append(filter_fields(entity, include_fields))
+            else:
+                # Use the same fields for all entities
+                filtered_entities.append(filter_fields(entity, include_fields))
         
-        return result
+        return filtered_entities
     else:
-        # Return full entities
+        # Return full entity data
         return entities
 
 @handle_api_errors
@@ -499,6 +609,206 @@ async def get_hass_error_log() -> Dict[str, Any]:
             "error_count": 0,
             "warning_count": 0,
             "integration_mentions": {}
+        }
+
+@handle_api_errors
+@cacheable(entity_cache, "get_entity_history")
+async def get_entity_history(entity_id: str, hours: int = 24, minimal: bool = False, use_cache: bool = True) -> Dict[str, Any]:
+    """
+    Get the history of an entity's state changes from Home Assistant
+    
+    Args:
+        entity_id: The entity ID to get history for
+        hours: Number of hours of history to retrieve (default: 24)
+        minimal: If True, reduces response size by filtering attributes
+                 and limiting the number of data points
+        use_cache: Whether to use cached data if available
+    
+    Returns:
+        Dictionary containing:
+        - entity_id: The requested entity ID
+        - states: List of state records with timestamp and value
+        - count: Number of state changes
+        - first_changed: Earliest timestamp in the history
+        - last_changed: Latest timestamp in the history
+        - statistics: Summary statistics (min, max, avg) if applicable
+    """
+    try:
+        # Verify the entity exists first
+        current = await get_entity_state(entity_id, detailed=True)
+        if isinstance(current, dict) and "error" in current:
+            return {
+                "entity_id": entity_id,
+                "error": current["error"],
+                "states": [],
+                "count": 0
+            }
+        
+        # Calculate the start time (now - hours)
+        from datetime import datetime, timedelta
+        import urllib.parse
+        
+        end_time = datetime.utcnow()
+        start_time = end_time - timedelta(hours=hours)
+        
+        # Format timestamps for the API
+        start_time_str = start_time.isoformat()
+        end_time_str = end_time.isoformat()
+        
+        # Encode entity_id for URL
+        encoded_entity_id = urllib.parse.quote(entity_id)
+        
+        # Build URL with timestamp filter
+        url = f"{HA_URL}/api/history/period/{start_time_str}?filter_entity_id={encoded_entity_id}&end_time={end_time_str}"
+        
+        # Get history from API
+        client = await get_client()
+        response = await client.get(url, headers=get_ha_headers(), timeout=30)
+        response.raise_for_status()
+        history_data = response.json()
+        
+        # History API returns a list of lists, with each inner list containing
+        # the state history for a single entity
+        if not history_data or not isinstance(history_data, list) or len(history_data) == 0:
+            return {
+                "entity_id": entity_id,
+                "states": [],
+                "count": 0,
+                "note": "No history data found for this entity in the specified time range."
+            }
+        
+        # Get the state history for our entity (should be the first/only item)
+        entity_history = history_data[0] if len(history_data) > 0 else []
+        
+        # Process the history data
+        states = []
+        first_changed = None
+        last_changed = None
+        
+        # For minimal mode and large datasets, we'll sample the data
+        max_points = 100 if minimal else 1000
+        sample_rate = max(1, len(entity_history) // max_points) if len(entity_history) > max_points else 1
+        
+        # For numeric data, track statistics
+        numeric_data = []
+        is_numeric = False
+        
+        for i, state_record in enumerate(entity_history):
+            # In minimal mode with large datasets, sample the data
+            if minimal and i % sample_rate != 0 and i != len(entity_history) - 1:
+                continue
+                
+            # Extract basic state info
+            state = state_record.get("state")
+            last_changed = state_record.get("last_changed")
+            
+            if first_changed is None:
+                first_changed = last_changed
+            
+            # Check if state is numeric for statistics
+            try:
+                numeric_value = float(state)
+                numeric_data.append(numeric_value)
+                is_numeric = True
+            except (ValueError, TypeError):
+                pass
+            
+            # Create the state record
+            state_entry = {
+                "state": state,
+                "last_changed": last_changed
+            }
+            
+            # In minimal mode, filter attributes to save tokens
+            if minimal:
+                # Include only essential attributes
+                filtered_attrs = {}
+                full_attrs = state_record.get("attributes", {})
+                
+                # Keep only important attributes
+                essential_attrs = ["unit_of_measurement", "friendly_name", "device_class"]
+                for attr in essential_attrs:
+                    if attr in full_attrs:
+                        filtered_attrs[attr] = full_attrs[attr]
+                
+                if filtered_attrs:
+                    state_entry["attributes"] = filtered_attrs
+            else:
+                # Include all attributes
+                state_entry["attributes"] = state_record.get("attributes", {})
+            
+            states.append(state_entry)
+        
+        # Prepare the result
+        result = {
+            "entity_id": entity_id,
+            "states": states,
+            "count": len(states)
+        }
+        
+        # Add timestamp range if available
+        if first_changed:
+            result["first_changed"] = first_changed
+        if last_changed:
+            result["last_changed"] = last_changed
+            
+        # Add statistics for numeric data
+        if is_numeric and len(numeric_data) > 0:
+            result["statistics"] = {
+                "min": min(numeric_data),
+                "max": max(numeric_data),
+                "avg": sum(numeric_data) / len(numeric_data),
+                "count": len(numeric_data)
+            }
+            
+            # Check if this is an important sensor type from its attributes
+            domain = entity_id.split(".")[0]
+            attributes = current.get("attributes", {})
+            device_class = attributes.get("device_class")
+            unit = attributes.get("unit_of_measurement", "")
+            
+            # Add more detailed statistics for specific entity types
+            # This is generalized to work with any sensor, not just energy-specific ones
+            if domain == "sensor" and len(numeric_data) > 1:
+                # Calculate change and trend (for any numeric sensor)
+                first_val = numeric_data[0] 
+                last_val = numeric_data[-1]
+                change = last_val - first_val
+                
+                # Add change info regardless of sensor type
+                result["statistics"]["change"] = change
+                
+                # Add a simple trend indicator
+                if abs(change) < 0.01 * max(abs(first_val), 0.01):  # Less than 1% change
+                    trend = "stable"
+                else:
+                    trend = "increasing" if change > 0 else "decreasing"
+                    
+                result["statistics"]["trend"] = trend
+                
+                # For unit-based analysis (works for any unit, not just energy)
+                if unit:
+                    result["statistics"]["unit"] = unit
+                    
+                    # Calculate period averages for any sensor
+                    # This works for temperature, humidity, power, etc.
+                    if hours <= 24:
+                        result["statistics"]["daily_avg"] = sum(numeric_data) / len(numeric_data)
+                    elif hours <= 168:  # 7 days
+                        result["statistics"]["weekly_avg"] = sum(numeric_data) / len(numeric_data)
+        
+                # Add device class if available
+                if device_class:
+                    result["statistics"]["device_class"] = device_class
+        
+        return result
+    except Exception as e:
+        logger.error(f"Error retrieving history for {entity_id}: {str(e)}", exc_info=True)
+        return {
+            "entity_id": entity_id,
+            "error": f"Error retrieving history: {str(e)}",
+            "states": [],
+            "count": 0
         }
 
 @handle_api_errors
