@@ -8,6 +8,30 @@ import httpx
 # Add app directory to path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
+# Mock MCP Server instance to prevent circular imports during testing
+@pytest.fixture(autouse=True)
+def mock_mcp_server():
+    """Mock the MCP server instance."""
+    # Create a mock MCP server
+    mock_server = MagicMock()
+    mock_server.name = "Hass-MCP"
+    mock_server.version = "0.4.0"
+    mock_server.register_tool = MagicMock()
+    mock_server.register_resource = MagicMock()
+    mock_server.tool = MagicMock(return_value=lambda func: func)
+    mock_server.resource = MagicMock(return_value=lambda func: func)
+    mock_server.prompt = MagicMock(return_value=lambda func: func)
+    mock_server.start = AsyncMock()
+    mock_server.stop = AsyncMock()
+    
+    # Create a patched version of the initialize_mcp function
+    with patch('app.mcp.instance.initialize_mcp', return_value=mock_server):
+        # Also directly patch the mcp import in app.server
+        with patch('app.server.mcp', mock_server):
+            # And patch the direct import of mcp in any tests
+            with patch('app.mcp.instance.mcp', mock_server):
+                yield mock_server
+
 # Mock environment variables before imports
 @pytest.fixture(autouse=True)
 def mock_env_vars():

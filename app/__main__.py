@@ -1,13 +1,30 @@
 #!/usr/bin/env python
-"""Entry point for running Hass-MCP as a module"""
+"""
+Einstiegspunkt für die Ausführung der Home Assistant MCP-Anwendung
+"""
 
-from app.server import mcp
+import logging
+from app.server import start_mcp_server, cleanup
 
-
-def main():
-    """Run the MCP server with stdio communication"""
-    mcp.run()
-
+# Logging konfigurieren
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 if __name__ == "__main__":
-    main()
+    logger.info("Starting Home Assistant MCP Server")
+    
+    try:
+        # MCP-Server starten
+        start_mcp_server()
+        
+        # Hauptthread am Laufen halten
+        import time
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        logger.info("Server stopping due to keyboard interrupt...")
+        cleanup()
+    except Exception as e:
+        logger.error(f"Error starting server: {e}", exc_info=True)
+        cleanup()
+        raise

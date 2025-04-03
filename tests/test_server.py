@@ -303,3 +303,121 @@ class TestMCPServer:
             # Verify the function call with lean=True parameter
             mock_get_state.assert_called_with("light.living_room", lean=True)
             assert result == mock_filtered
+
+    @pytest.mark.asyncio
+    async def test_mcp_tool_error_handling(self):
+        """Test error handling for MCP tools."""
+        from app.server import entity_action, get_entity, list_entities
+        
+        # Test invalid entity_id handling
+        with patch("app.server.call_service") as mock_call_service:
+            mock_call_service.side_effect = Exception("Entity not found")
+            result = await entity_action(entity_id="non.existent", action="on")
+            assert "error" in result
+            assert "Entity not found" in result["error"]
+        
+        # Test invalid action handling
+        result = await entity_action(entity_id="light.living_room", action="invalid_action")
+        assert "error" in result
+        assert "Invalid action" in result["error"]
+        
+        # Test get_entity with non-existent entity
+        with patch("app.server.get_entity_state") as mock_get_state:
+            mock_get_state.return_value = {"error": "Entity not found"}
+            result = await get_entity(entity_id="non.existent")
+            assert "error" in result
+            assert "Entity not found" in result["error"]
+            
+        # Test list_entities with invalid domain
+        result = await list_entities(domain="invalid_domain")
+        assert isinstance(result, list)
+        assert len(result) == 0
+
+    @pytest.mark.asyncio
+    async def test_mcp_tool_edge_cases(self):
+        """Test edge cases for MCP tools."""
+        from app.server import entity_action, get_entity, list_entities, search_entities_tool
+        
+        # Test empty search query
+        result = await search_entities_tool(query="")
+        assert "results" in result
+        assert isinstance(result["results"], list)
+        
+        # Test extremely long entity_id
+        long_entity_id = "light." + "a" * 256
+        result = await get_entity(entity_id=long_entity_id)
+        assert "error" in result
+        
+        # Test with special characters in entity_id
+        special_entity_id = "light.living_room#$%"
+        result = await get_entity(entity_id=special_entity_id)
+        assert "error" in result
+        
+        # Test list_entities with extremely large limit
+        result = await list_entities(limit=1000000)
+        assert isinstance(result, list)
+        assert len(result) <= 1000  # Should be capped at a reasonable limit
+
+    @pytest.mark.asyncio
+    async def test_mcp_tool_performance(self):
+        """Test performance aspects of MCP tools."""
+        from app.server import list_entities, search_entities_tool
+        import time
+        
+        # Test search performance
+        start_time = time.time()
+        result = await search_entities_tool(query="light")
+        end_time = time.time()
+        assert end_time - start_time < 2.0  # Should complete within 2 seconds
+        
+        # Test list_entities performance with different limits
+        for limit in [10, 50, 100]:
+            start_time = time.time()
+            result = await list_entities(limit=limit)
+            end_time = time.time()
+            assert end_time - start_time < 1.0  # Should complete within 1 second
+            assert len(result) <= limit
+
+    @pytest.mark.asyncio
+    async def test_mcp_tool_concurrent_access(self):
+        """Test concurrent access to MCP tools."""
+        from app.server import get_entity, list_entities
+        
+        # Test concurrent entity queries
+        async def query_entity(entity_id):
+            return await get_entity(entity_id=entity_id)
+            
+        # Run multiple queries concurrently
+        entity_ids = ["light.living_room", "switch.kitchen", "sensor.temperature"]
+        tasks = [query_entity(entity_id) for entity_id in entity_ids]
+        results = await asyncio.gather(*tasks)
+        
+        # Verify results
+        assert len(results) == len(entity_ids)
+        assert all(isinstance(r, dict) for r in results)
+
+    @pytest.mark.asyncio
+    async def test_mcp_tool_state_consistency(self):
+        """Test state consistency across different MCP tools."""
+        from app.server import get_entity, list_entities, search_entities_tool
+        
+        # Get entity state through different methods
+        entity_id = "light.living_room"
+        
+        # Direct entity query
+        direct_result = await get_entity(entity_id=entity_id)
+        
+        # List entities filtered by domain
+        list_result = await list_entities(domain="light")
+        list_entity = next((e for e in list_result if e["entity_id"] == entity_id), None)
+        
+        # Search entities
+        search_result = await search_entities_tool(query="living_room")
+        search_entity = next((e for e in search_result["results"] if e["entity_id"] == entity_id), None)
+        
+        # Verify consistency if entity exists
+        if "error" not in direct_result:
+            assert list_entity is not None
+            assert search_entity is not None
+            assert direct_result["state"] == list_entity["state"]
+            assert direct_result["state"] == search_entity["state"]

@@ -2,7 +2,6 @@
 __pycache__/
 *.egg-info/
 *.egg
-venv/
 
 # Virtual Environment
 .venv/
@@ -18,6 +17,7 @@ Thumbs.db
 
 # Testing
 .pytest_cache/
+tests/
 
 # Projektdokumentation
 PROJECT_PLAN.md
