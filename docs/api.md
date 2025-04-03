@@ -1,32 +1,32 @@
-# Hass-MCP API-Dokumentation
+# Hass-MCP API Documentation
 
-Diese Dokumentation beschreibt die API-Komponenten, die von der Hass-MCP Integration verwendet werden.
+This documentation describes the API components used by the Hass-MCP integration.
 
-## Home Assistant API-Client
+## Home Assistant API Client
 
-Der Home Assistant API-Client (`app/api/client.py`) stellt eine abstrahierte Schnittstelle zur Home Assistant REST API bereit.
+The Home Assistant API Client (`app/api/client.py`) provides an abstracted interface to the Home Assistant REST API.
 
-### Hauptfunktionen
+### Main Functions
 
-- **Statusabfragen** für Home Assistant Entitäten
-- **Steuerungsbefehle** für Geräte und Dienste
-- **Historiendaten** für Entitäten abrufen
-- **Konfigurationsverwaltung** für Home Assistant
+- **Status queries** for Home Assistant entities
+- **Control commands** for devices and services
+- **Historical data** retrieval for entities
+- **Configuration management** for Home Assistant
 
 ## MCP Tools
 
-Die MCP Tools (`app/mcp/tools.py`) bieten eine Schnittstelle für Large Language Models (LLMs) und KI-Assistenten zur Interaktion mit Home Assistant.
+The MCP Tools (`app/mcp/tools.py`) provide an interface for Large Language Models (LLMs) and AI assistants to interact with Home Assistant.
 
-### Verfügbare Tools
+### Available Tools
 
-- **Entity Management**: Abfragen und Steuern von Home Assistant Entitäten
-- **System Management**: Konfiguration und Kontrolle der Home Assistant Instanz
-- **Automatisierungstools**: Interaktion mit Home Assistant Automatisierungen
+- **Entity Management**: Query and control Home Assistant entities
+- **System Management**: Configuration and control of the Home Assistant instance
+- **Automation Tools**: Interaction with Home Assistant automations
 
-## Ressourcen
+## Resources
 
-Die MCP Ressourcen (`app/mcp/resources.py`) stellen strukturierte Daten für LLMs und KI-Assistenten bereit.
+The MCP Resources (`app/mcp/resources.py`) provide structured data for LLMs and AI assistants.
 
 ---
 
-*Diese Dokumentation wird kontinuierlich erweitert und aktualisiert.* 
+*This documentation is continuously expanded and updated.* 
