@@ -2,6 +2,7 @@
 __pycache__/
 *.egg-info/
 *.egg
+venv/
 
 # Virtual Environment
 .venv/
@@ -20,9 +21,3 @@ Thumbs.db
 
 # Projektdokumentation
 PROJECT_PLAN.md
-
-# Cursor-spezifische Dateien
-.cursor/
-.cursorignore
-.cursorindexingignore
-*.cursor
