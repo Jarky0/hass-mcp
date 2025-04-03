@@ -125,22 +125,22 @@ async def get_entity(entity_id: str, fields: Optional[List[str]] = None, detaile
 
 @mcp.tool()
 @async_handler("entity_action")
-async def entity_action(entity_id: str, action: str, **params) -> dict:
+async def entity_action(entity_id: str, action: str, params: str) -> dict:
     """
     Perform an action on a Home Assistant entity (on, off, toggle)
 
     Args:
         entity_id: The entity ID to control (e.g. 'light.living_room')
         action: The action to perform ('on', 'off', 'toggle')
-        **params: Additional parameters for the service call
+        params: Additional parameters for the service call as a JSON string
 
     Returns:
         The response from Home Assistant
 
     Examples:
-        entity_id="light.living_room", action="on", brightness=255
-        entity_id="switch.garden_lights", action="off"
-        entity_id="climate.living_room", action="on", temperature=22.5
+        entity_id="light.living_room", action="on", params='{"brightness": 255}'
+        entity_id="switch.garden_lights", action="off", params='{}'
+        entity_id="climate.living_room", action="on", params='{"temperature": 22.5}'
 
     Domain-Specific Parameters:
         - Lights: brightness (0-255), color_temp, rgb_color, transition, effect
@@ -153,17 +153,48 @@ async def entity_action(entity_id: str, action: str, **params) -> dict:
         return {"error": f"Invalid action: {action}. Valid actions are 'on', 'off', 'toggle'"}
 
     # Map action to service name
-    # Korrigiert: 'turn_on'/'turn_off' statt nur 'on'/'off'
     service = f"turn_{action}" if action in ["on", "off"] else action # toggle bleibt toggle
 
     # Extract the domain from the entity_id
     domain = entity_id.split(".")[0]
 
     # Prepare service data
-    data = {"entity_id": entity_id, **params}
+    try:
+        import json
+        # Handle different types of params input
+        if not params or params.strip() == '':
+            # Empty string
+            params_dict = {}
+        elif isinstance(params, str):
+            # JSON string
+            params_dict = json.loads(params)
+        else:
+            # Invalid input
+            logger.warning(f"Invalid params type: {type(params)}. Expected string.")
+            params_dict = {}
+    except json.JSONDecodeError as e:
+        logger.error(f"Error parsing params JSON: {e}, params: {params}")
+        return {"error": f"Invalid JSON in params: {str(e)}", "params_received": params}
+    except Exception as e:
+        logger.error(f"Unexpected error parsing params: {str(e)}")
+        params_dict = {}
 
-    logger.info(f"Performing action '{service}' on entity: {entity_id} with params: {params}")
-    return await call_service(domain, service, data)
+    data = {"entity_id": entity_id, **params_dict}
+
+    logger.info(f"Performing action '{service}' on entity: {entity_id} with params: {params_dict}")
+    result = await call_service(domain, service, data)
+    
+    # Enhance the response with context
+    if isinstance(result, dict):
+        if "success" in result and result["success"]:
+            result["action_performed"] = f"{service} on {entity_id}"
+            result["message"] = f"Successfully performed {service} on {entity_id}"
+        elif "error" in result:
+            # Error already in the result, just add context
+            result["entity_id"] = entity_id
+            result["action_attempted"] = service
+    
+    return result
 
 
 @mcp.tool()
@@ -438,28 +469,73 @@ async def restart_ha() -> Dict[str, Any]:
     return await restart_home_assistant()
 
 @mcp.tool()
-@async_handler("call_service")
-async def call_service_tool(domain: str, service: str, data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+@async_handler("call_service_tool")
+async def call_service_tool(domain: str, service: str, data: str = None) -> Dict[str, Any]:
     """
     Call any Home Assistant service (low-level API access)
 
     Args:
         domain: The domain of the service (e.g., 'light', 'switch', 'automation')
         service: The service to call (e.g., 'turn_on', 'turn_off', 'toggle')
-        data: Optional data to pass to the service (e.g., {'entity_id': 'light.living_room'})
+        data: Optional data to pass to the service as a JSON string (e.g., '{"entity_id": "light.living_room"}')
 
     Returns:
         The response from Home Assistant (usually empty for successful calls)
 
     Examples:
-        domain='light', service='turn_on', data={'entity_id': 'light.x', 'brightness': 255}
+        domain='light', service='turn_on', data='{"entity_id": "light.x", "brightness": 255}'
         domain='automation', service='reload'
-        domain='fan', service='set_percentage', data={'entity_id': 'fan.x', 'percentage': 50}
-
+        domain='fan', service='set_percentage', data='{"entity_id": "fan.x", "percentage": 50}'
     """
-    logger.info(f"Calling Home Assistant service: {domain}.{service} with data: {data}")
-    return await call_service(domain, service, data or {})
+    # Parse data if it's a JSON string
+    data_dict = {}
+    if data:
+        try:
+            import json
+            if isinstance(data, str) and data.strip():
+                data_dict = json.loads(data)
+            elif isinstance(data, dict):
+                data_dict = data
+        except Exception as e:
+            logger.error(f"Error parsing data JSON: {e}")
+            return {"error": f"Invalid JSON format: {str(e)}"}
 
+    logger.info(f"Calling service {domain}.{service} with data: {data_dict}")
+    
+    try:
+        # Direct API call
+        client = await get_client()
+        url = f"{HA_URL}/api/services/{domain}/{service}"
+        response = await client.post(
+            url,
+            headers=get_ha_headers(),
+            json=data_dict
+        )
+        response.raise_for_status()
+        
+        # Invalidate cache
+        global _entities_timestamp
+        _entities_timestamp = 0
+        
+        # Try to parse JSON response
+        try:
+            return response.json()
+        except ValueError:
+            # Return success if empty but status 200
+            if response.status_code == 200:
+                return {
+                    "success": True,
+                    "service_called": f"{domain}.{service}",
+                    "status_code": response.status_code
+                }
+            else:
+                return {
+                    "error": f"Invalid response: {response.text}",
+                    "status_code": response.status_code
+                }
+    except Exception as e:
+        logger.error(f"Error calling service {domain}.{service}: {str(e)}")
+        return {"error": f"Service call failed: {str(e)}"}
 
 @mcp.tool()
 @async_handler("get_history")
@@ -1591,7 +1667,7 @@ async def handle_intent(text: str, slot_data: Optional[Dict[str, Any]] = None) -
 
 @mcp.tool()
 @async_handler("reload_ha")
-async def reload_ha(component: Optional[str] = None, reload_all: bool = False) -> Dict[str, Any]:
+async def reload_ha(component: str = None, reload_all: bool = False) -> Dict[str, Any]:
     """
     Reload Home Assistant components without a full restart
     
@@ -1630,6 +1706,8 @@ async def reload_ha(component: Optional[str] = None, reload_all: bool = False) -
         components_to_reload = ["core_config", "lovelace", "lovelace_resources", 
                               "automation", "script", "scene", "frontend"]
     elif component:
+        if component not in reload_services:
+            return {"error": f"Unknown component: {component}"}
         components_to_reload = [component]
     else:
         components_to_reload = ["lovelace", "lovelace_resources"]
@@ -1638,22 +1716,79 @@ async def reload_ha(component: Optional[str] = None, reload_all: bool = False) -
         if comp in reload_services:
             service_data = reload_services[comp]
             try:
-                await api_call(
-                    "POST", 
-                    f"/api/services/{service_data['domain']}/{service_data['service']}"
+                result = await call_service(
+                    service_data["domain"],
+                    service_data["service"]
                 )
-                results[comp] = "Reloaded successfully"
+                if isinstance(result, dict) and "error" in result:
+                    results[comp] = f"Error: {result['error']}"
+                else:
+                    results[comp] = "Reloaded successfully"
             except Exception as e:
                 error_msg = f"Error reloading {comp}: {str(e)}"
                 logger.error(error_msg, exc_info=True)
                 results[comp] = error_msg
-        else:
-            results[comp] = f"Unknown component: {comp}"
     
     return {
         "result": "Reload operations completed",
         "details": results
     }
+
+@mcp.tool()
+@async_handler("light_control")
+async def light_control(entity_id: str, action: str) -> dict:
+    """
+    Steuert ein Licht (ein, aus, umschalten)
+    
+    Args:
+        entity_id: Die Entitäts-ID des Lichts (z.B. 'light.flur_deckenleuchte_1')
+        action: Die auszuführende Aktion ('on', 'off', 'toggle')
+        
+    Returns:
+        Die Antwort von Home Assistant
+    """
+    if action not in ["on", "off", "toggle"]:
+        logger.error(f"Ungültige Aktion: {action}")
+        return {"error": f"Ungültige Aktion: {action}. Gültige Aktionen sind 'on', 'off', 'toggle'"}
+    
+    # Aktion in Servicename umwandeln
+    service = f"turn_{action}" if action in ["on", "off"] else action
+    
+    # Extrahiere Domain aus der Entitäts-ID
+    domain = entity_id.split(".")[0]
+    
+    # Bereite Servicedaten vor
+    data = {"entity_id": entity_id}
+    
+    logger.info(f"Führe Aktion '{service}' für {entity_id} aus")
+    
+    try:
+        # Direkter API-Aufruf anstatt call_service
+        client = await get_client()
+        url = f"{HA_URL}/api/services/{domain}/{service}"
+        response = await client.post(
+            url,
+            headers=get_ha_headers(),
+            json=data
+        )
+        response.raise_for_status()
+        
+        # Erfolgreiche Antwort
+        return {
+            "success": True,
+            "message": f"Aktion {service} für {entity_id} erfolgreich ausgeführt",
+            "entity_id": entity_id,
+            "action": action,
+            "service": service
+        }
+    except Exception as e:
+        logger.error(f"Fehler beim Ausführen von {service} für {entity_id}: {str(e)}")
+        return {
+            "error": f"Fehler: {str(e)}",
+            "entity_id": entity_id,
+            "action": action,
+            "service": service
+        }
 
 # --- Main Execution Logic ---
 # HINWEIS: Die Verwendung von asyncio.run() hier ist korrekt für das direkte

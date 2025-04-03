@@ -17,3 +17,6 @@ Thumbs.db
 
 # Testing
 .pytest_cache/
+
+# Projektdokumentation
+PROJECT_PLAN.md

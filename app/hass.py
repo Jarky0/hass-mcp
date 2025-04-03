@@ -420,23 +420,55 @@ async def get_entities(
 
 @handle_api_errors
 async def call_service(domain: str, service: str, data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """Call a Home Assistant service"""
+    """Call a service in Home Assistant"""
+    # Ensure we have a data object, never send None
     if data is None:
         data = {}
     
     client = await get_client()
-    response = await client.post(
-        f"{HA_URL}/api/services/{domain}/{service}", 
-        headers=get_ha_headers(),
-        json=data
-    )
-    response.raise_for_status()
-    
-    # Invalidate cache after service calls as they might change entity states
-    global _entities_timestamp
-    _entities_timestamp = 0
-    
-    return response.json()
+    try:
+        response = await client.post(
+            f"{HA_URL}/api/services/{domain}/{service}", 
+            headers=get_ha_headers(),
+            json=data
+        )
+        response.raise_for_status()
+        
+        # Invalidate cache after service calls as they might change entity states
+        global _entities_timestamp
+        _entities_timestamp = 0
+        
+        try:
+            return response.json()
+        except ValueError:
+            # Return success if response is empty but status was 200
+            if response.status_code == 200:
+                return {
+                    "success": True, 
+                    "status_code": response.status_code,
+                    "info": f"Service {domain}.{service} called successfully"
+                }
+            else:
+                return {
+                    "error": f"Invalid response from service call: {response.text}",
+                    "status_code": response.status_code
+                }
+    except httpx.HTTPStatusError as e:
+        # Handle HTTP errors with more details
+        error_detail = ""
+        try:
+            error_response = e.response.json()
+            if isinstance(error_response, dict) and "message" in error_response:
+                error_detail = f": {error_response['message']}"
+        except:
+            error_detail = f": {e.response.text}" if e.response.text else ""
+            
+        return {
+            "error": f"HTTP error {e.response.status_code}{error_detail}",
+            "status_code": e.response.status_code
+        }
+    except Exception as e:
+        return {"error": f"Error calling service {domain}.{service}: {str(e)}"}
 
 @handle_api_errors
 async def summarize_domain(domain: str, example_limit: int = 3) -> Dict[str, Any]:
