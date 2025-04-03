@@ -93,7 +93,7 @@ async def get_entity(entity_id: str, fields: Optional[List[str]] = None, detaile
     # Standardrückgabe, wenn keine spezifischen Felder angefordert wurden
     return result
 
-async def entity_action(entity_id: str, action: str, params: str) -> Dict[str, Any]:
+async def entity_action(entity_id: str, action: str, params: str = "{}") -> Dict[str, Any]:
     """
     Führt eine Aktion auf einer Home Assistant Entität aus (on, off, toggle)
     
@@ -127,9 +127,16 @@ async def entity_action(entity_id: str, action: str, params: str) -> Dict[str, A
     
     # Parse zusätzliche Parameter
     try:
-        parameters = json.loads(params)
-    except json.JSONDecodeError:
-        return {"error": f"Ungültiger JSON-String für Parameter: {params}"}
+        # Stelle sicher, dass params ein String ist
+        if params is None or params == "":
+            parameters = {}
+        else:
+            try:
+                parameters = json.loads(params)
+            except Exception as e:
+                return {"error": f"Ungültiger JSON-String für Parameter: {params}. Fehler: {str(e)}"}
+    except Exception as e:
+        return {"error": f"Fehler bei der Verarbeitung der Parameter: {str(e)}"}
     
     # Füge entity_id zu Parametern hinzu
     parameters["entity_id"] = entity_id

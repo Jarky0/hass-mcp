@@ -71,7 +71,7 @@ async def mcp_get_entity(
 async def mcp_entity_action(
     entity_id: str,
     action: str,
-    params: str
+    params: str = "{}"
 ) -> Dict[str, Any]:
     """
     Führt eine Aktion auf einer Home Assistant Entität aus (on, off, toggle)
@@ -84,6 +84,16 @@ async def mcp_entity_action(
     Returns:
         Die Antwort von Home Assistant
     """
+    # Stellen Sie sicher, dass params ein String ist
+    if params is None:
+        params = "{}"
+    elif not isinstance(params, str):
+        try:
+            import json
+            params = json.dumps(params)
+        except:
+            params = "{}"
+    
     return await entity_action(entity_id, action, params)
 
 @router.get("/entities")

@@ -125,7 +125,7 @@ async def get_entity(entity_id: str, fields: Optional[List[str]] = None, detaile
 
 @mcp.tool()
 @async_handler("entity_action")
-async def entity_action(entity_id: str, action: str, params: str) -> dict:
+async def entity_action(entity_id: str, action: str, params: str = "{}") -> dict:
     """
     Perform an action on a Home Assistant entity (on, off, toggle)
 
@@ -161,24 +161,19 @@ async def entity_action(entity_id: str, action: str, params: str) -> dict:
     # Prepare service data
     try:
         import json
-        # Handle different types of params input
-        if not params or params.strip() == '':
-            # Empty string
+        # Ensure params is a string
+        if params is None:
             params_dict = {}
-        elif isinstance(params, str):
-            # JSON string
-            params_dict = json.loads(params)
         else:
-            # Invalid input
-            logger.warning(f"Invalid params type: {type(params)}. Expected string.")
-            params_dict = {}
-    except json.JSONDecodeError as e:
-        logger.error(f"Error parsing params JSON: {e}, params: {params}")
-        return {"error": f"Invalid JSON in params: {str(e)}", "params_received": params}
+            try:
+                params_dict = json.loads(params)
+            except Exception as e:
+                logger.error(f"Error parsing params JSON: {e}, params: {params}")
+                return {"error": f"Invalid JSON in params: {str(e)}", "params_received": params}
     except Exception as e:
-        logger.error(f"Unexpected error parsing params: {str(e)}")
-        params_dict = {}
-
+        logger.error(f"Unexpected error handling params: {str(e)}")
+        return {"error": f"Error processing parameters: {str(e)}"}
+        
     data = {"entity_id": entity_id, **params_dict}
 
     logger.info(f"Performing action '{service}' on entity: {entity_id} with params: {params_dict}")
